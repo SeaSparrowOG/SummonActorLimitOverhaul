@@ -1,6 +1,37 @@
-
-
 #include "include\PerkEntryPointExtenderAPI.h"
+
+void SetupLog() {
+    auto logsFolder = SKSE::log::log_directory();
+    if (!logsFolder) SKSE::stl::report_and_fail("SKSE log_directory not provided, logs disabled.");
+
+    auto pluginName = Version::PROJECT;
+    auto logFilePath = *logsFolder / std::format("{}.log", pluginName);
+    auto fileLoggerPtr = std::make_shared<spdlog::sinks::basic_file_sink_mt>(logFilePath.string(), true);
+    auto loggerPtr = std::make_shared<spdlog::logger>("log", std::move(fileLoggerPtr));
+
+    spdlog::set_default_logger(std::move(loggerPtr));
+    spdlog::set_level(spdlog::level::info);
+    spdlog::flush_on(spdlog::level::info);
+
+    //Pattern
+    spdlog::set_pattern("%v");
+}
+
+class EntryVisitor : public RE::PerkEntryVisitor {
+public:
+    RE::Actor* summoner;
+    RE::BSTArray<RE::CommandedActorData> commandedActorData;
+
+    RE::BSContainer::ForEachResult Visit(RE::BGSPerkEntry* a_entry) override {
+        return RE::BSContainer::ForEachResult::kContinue;
+    }
+
+    //Note - these are ALWAYS filled. It's checked earlier on.
+    EntryVisitor(RE::Actor* a_summoner, RE::BSTArray<RE::CommandedActorData> a_commandedActorData) {
+        this->summoner = a_summoner;
+        this->commandedActorData = a_commandedActorData;
+    }
+};
 
 struct Hooks {
     struct CommandedActorLimitHook {
@@ -8,171 +39,47 @@ struct Hooks {
   
             float* floatPtr = static_cast<float*>(out);
             *floatPtr = 999.0f;  // If you need more than 999 summons, I think you've got a problem
-
         }
         static inline REL::Relocation<decltype(thunk)> func;
     };
 
     struct CommandedActorHook {
-        static void thunk(RE::AIProcess* test, RE::ActiveEffectReferenceEffectController* target2, void* target3) {
-            func(test, target2, target3);
-            auto a_AE = target2->effect;
-            std::vector<int> indexarray;
-            std::vector<int> indexarrayuntyped;
-            std::vector<int> indexarrayworking;
-            std::vector<int> indexarrayworking2;
-            std::vector<float> indexarrayworkingfloat;
-            std::vector<int> indexarrayworkinguntyped;
-            std::vector<int> indexarrayworking2untyped;
-            std::vector<float> indexarrayworkingfloatuntyped;
+        static void thunk(RE::AIProcess* a_AIProcess, RE::ActiveEffectReferenceEffectController* a_activeEffectController, void* a_out) {
+            func(a_AIProcess, a_activeEffectController, a_out);
 
-           
-            float perkfactor = 0.0f;
-            int j = 0;
-            int n = 0;
-            int reanimated = 0;
-            int accountedfor = 0;
-            if (a_AE) {
-                auto akCastedMagic = a_AE->spell;
-                RE::SummonCreatureEffect* summonedeffect;
-                RE::ReanimateEffect* reanimatedeffect;
-                RE::CommandEffect* commandedeffect;
-                auto mid = test->middleHigh->commandedActors;
-                auto summoner = test->GetUserData();
-                RE::Actor* summonedactor;
-                std::string_view a_editorID;
+            //Validate that the effect has a valid base spell and magic effect.
+            auto* baseActiveEffect = a_activeEffectController->effect ? a_activeEffectController->effect : nullptr;
+            auto* baseSpell = baseActiveEffect ? baseActiveEffect->spell : nullptr;
+            auto* baseEffect = baseSpell ? baseActiveEffect->effect : nullptr;
+            auto* baseMagicEffect = baseEffect ? baseEffect->baseEffect : nullptr;
+            if (!baseMagicEffect) return;
 
-                if (a_AE->effect->baseEffect->HasArchetype(RE::EffectArchetypes::ArchetypeID::kSummonCreature)) {
-                    summonedeffect = reinterpret_cast<RE::SummonCreatureEffect*>(a_AE);
-                    if (summonedeffect) {
-                        a_editorID = "MagicSummon";
+            //Validate that there is a summoner.
+            auto* midHigh = a_AIProcess->middleHigh ? a_AIProcess->middleHigh : nullptr;
+            auto commandedActors = midHigh ? midHigh->commandedActors : RE::BSTArray<RE::CommandedActorData>();
+            auto* summoner = commandedActors.empty() ? nullptr : a_AIProcess->GetUserData();
+            if (!summoner) return;
 
-                        summonedactor = summonedeffect->commandedActor.get().get();
-                    }
-                } else if (a_AE->effect->baseEffect->HasArchetype(RE::EffectArchetypes::ArchetypeID::kReanimate)) {
-                    reanimatedeffect = reinterpret_cast<RE::ReanimateEffect*>(a_AE);
-                    if (reanimatedeffect) {
-                        a_editorID = "MagicSummon";
-                        reanimated = 1;
-                        summonedactor = reanimatedeffect->commandedActor.get().get();
-                    }
-                } else if (a_AE->effect->baseEffect->HasArchetype(
-                               RE::EffectArchetypes::ArchetypeID::kCommandSummoned)) {
-                    commandedeffect = reinterpret_cast<RE::CommandEffect*>(a_AE);
-                    if (commandedeffect) {
-                        a_editorID = "MagicCommand";
+            //Float representing the limit for the number of summons of specific type.
+            float limit = 1.0f;
+            RE::BGSEntryPoint::HandleEntryPoint(RE::PerkEntryPoint::kModCommandedActorLimit, summoner, baseSpell, &limit);
 
-                        summonedactor = commandedeffect->commandedActor.get().get();
-                    }
-                }
+            //The actual logic is processes inside the perkEntryVisitor object. Which is deleted at the end.
+            auto entryVisitor = EntryVisitor(summoner, commandedActors);
+            RE::PerkEntryVisitor& perkEntryVisitor = entryVisitor;
 
-                std::unordered_map<std::string, float> keywordmap;
-                perkfactor = 1.0f;
-                RE::BGSEntryPoint::HandleEntryPoint(RE::PerkEntryPoint::kModCommandedActorLimit, summoner,
-                                                    akCastedMagic, &perkfactor);
-                
-                keywordmap["untyped"] = perkfactor;
-                for (auto& elements : mid) {
-                    indexarrayworking.push_back(j);
-                    indexarrayworkingfloat.push_back(mid[j].activeEffect->elapsedSeconds);
-                    j += 1;
-                }
-                for (std::uint32_t widx = 0; widx < indexarrayworking.size(); ++widx) {
-                        auto maxtime = std::max_element(indexarrayworkingfloat.begin(), indexarrayworkingfloat.end());
-                        float maxvalue = *maxtime;
-                        auto iter = (std::find(indexarrayworkingfloat.begin(), indexarrayworkingfloat.end(), maxvalue));
-                        auto index = std::distance(indexarrayworkingfloat.begin(), iter);
-                        if (indexarrayworking2.empty()) {
-                        indexarrayworking2.push_back(indexarrayworking[index]);
-                        } else {
-                        indexarrayworking2.insert(indexarrayworking2.begin(), indexarrayworking[index]);
-                        }
-                        indexarrayworkingfloat[index] = 0.0f;
-                }
-                for (std::uint32_t widx = 0; widx < indexarrayworking2.size(); ++widx) {
-                        auto element = mid[indexarrayworking2[widx]];
-                        accountedfor = 0;
-                        for (std::uint32_t idx = 0; idx < element.activeEffect->effect->baseEffect->numKeywords;
-                             ++idx) {
-                            if (element.activeEffect->effect->baseEffect->keywords[idx]->formEditorID.contains(
-                                    a_editorID)) {
-                                auto testkey =
-                                    element.activeEffect->effect->baseEffect->keywords[idx]->formEditorID.c_str();
-                                if (!keywordmap.contains(testkey)) {
-                                    perkfactor = 0.0f;
-                                    RE::HandleEntryPoint(RE::PerkEntryPoint::kModSpellCost, summoner, &perkfactor, element.activeEffect->effect->baseEffect->keywords[idx]->formEditorID.c_str(), 3, {element.activeEffect->spell});
-                                        keywordmap[testkey] = perkfactor;
-                                }
-                                if (keywordmap[testkey] >= 1.0f && accountedfor == 0) {
-                                        keywordmap[testkey] -= 1.0f;
-                                        accountedfor = 1;
-                                }
-
-                            }
-                        }
-
-                        if (!element.activeEffect->effect->baseEffect->HasKeywordString("MagicSpecialConjuration")) {
-                            if (keywordmap["untyped"] > 0.0f && accountedfor == 0) {
-                                keywordmap["untyped"] -= 1.0f;
-                                accountedfor = 1;
-                            }
-
-                        }
-
-                        if (accountedfor == 0) {
-                            indexarray.push_back(indexarrayworking2[widx]);
-                            if (widx == 0) n = 0;
-                        }
-
-                }
-
-                if (indexarray.size() > 0) {
-                        for (std::uint32_t widx = 0; widx < indexarray.size(); ++widx) {
-                            mid[indexarray[widx]].activeEffect->Dispel(true);
-                        }
-                }
-
-                if (n == 0 && reanimated == 0) {
-                    std::vector<RE::SpellItem*> reanimateSpells;
-
-                    //RE::BGSEntryPoint::HandleEntryPoint(RE::PerkEntryPoint::kApplyReanimateSpell, summoner,
-                    //                                    akCastedMagic, summonedactor, &reanimateSpells); //This would be to use vanilla apply reanimate spell entry point
-
-                     RE::HandleEntryPoint(RE::PerkEntryPoint::kApplyReanimateSpell, summoner,
-                                          &reanimateSpells, "SummonSpell", 3, {akCastedMagic, summonedactor});
-                    for (auto* reanimateSpell : reanimateSpells) {
-                        if (reanimateSpell->IsPermanent()) {
-                            summonedactor->AddSpell(reanimateSpell);
-                        } else {
-                            summoner->GetMagicCaster(RE::MagicSystem::CastingSource::kInstant)
-                                ->CastSpellImmediate(reanimateSpell, false, summonedactor, 1.0F, false, 0.0F, nullptr);
-                        }
-                    }
-                    std::vector<RE::SpellItem*> selfreanimateSpells;
-                    RE::HandleEntryPoint(RE::PerkEntryPoint::kApplyReanimateSpell, summoner, &reanimateSpells,
-                                         "SummonSpell", 4, {akCastedMagic, summonedactor});
-                    for (auto* reanimateSpell : selfreanimateSpells) {
-                        if (reanimateSpell->IsPermanent()) {
-                            summoner->AddSpell(reanimateSpell);
-                        } else {
-                            summoner->GetMagicCaster(RE::MagicSystem::CastingSource::kInstant)
-                                ->CastSpellImmediate(reanimateSpell, false, summoner, 1.0F, false, 0.0F, nullptr);
-                        }
-                    }
-
-
-
-                }
-            }
-
+            summoner->ForEachPerkEntry(RE::BGSEntryPoint::ENTRY_POINT::kModCommandedActorLimit, perkEntryVisitor);
+            delete &perkEntryVisitor;
         }
         static inline REL::Relocation<decltype(thunk)> func;
     };
     static void Install() {
+        //Hooks where the game looks for the actor's summon limit. Changes it to a static value.
         REL::Relocation<std::uintptr_t> functionCommandedActorLimitHook{RELOCATION_ID(38993, 40056),
                                                                         REL::Relocate(0xA1, 0xEC)};
         stl::write_thunk_call<CommandedActorLimitHook>(functionCommandedActorLimitHook.address());
 
+        //Hooks where the game processes the attempt to command an actor to replace the logic.
         REL::Relocation<std::uintptr_t> functionCommandedActorHook{RELOCATION_ID(38904, 39950),
                                                                    REL::Relocate(0x14B, 0x12B)};
         stl::write_thunk_call<CommandedActorHook>(functionCommandedActorHook.address());
