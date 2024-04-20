@@ -6,17 +6,9 @@
 #include <fstream>
 #include <spdlog/sinks/basic_file_sink.h>
 
-#include <ClibUtil/simpleINI.hpp>
-#include <ClibUtil/singleton.hpp>
-#include <ClibUtil/distribution.hpp>
-#include <ClibUtil/editorID.hpp>
-
-#include <json/json.h>
-
 #define DLLEXPORT __declspec(dllexport)
 
 using namespace std::literals;
-using namespace clib_util::singleton;
 
 #include "Version.h"
 
@@ -33,3 +25,11 @@ namespace stl {
 		T::func = trampoline.write_call<5>(a_src, T::thunk);
 	}
 }
+
+#ifdef SKYRIM_AE
+#	define OFFSET(se, ae) ae
+#	define OFFSET_3(se, ae, vr) ae
+#else
+#	define OFFSET(se, ae) se
+#	define OFFSET_3(se, ae, vr) se
+#endif
