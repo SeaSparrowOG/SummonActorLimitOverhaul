@@ -90,7 +90,6 @@ else ()
 endif()
 
 find_path(CLIB_UTIL_INCLUDE_DIRS "ClibUtil/utils.hpp")
-find_package(jsoncpp CONFIG REQUIRED)
 
 # ---- Add source files ----
 include(cmake/headerlist.cmake)
