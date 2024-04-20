@@ -1,4 +1,4 @@
 set(headers ${headers}
-	src/include/PCH.h
-	src/include/PerkEntryPointExtenderAPI.h
+	include/PCH.h
+	include/PerkEntryPointExtenderAPI.h
 )
