@@ -17,18 +17,30 @@ void SetupLog() {
 
 class EntryVisitor : public RE::PerkEntryVisitor {
 public:
-    RE::Actor* summoner;
-    RE::BSTArray<RE::CommandedActorData> commandedActorData;
-
     RE::BSContainer::ForEachResult Visit(RE::BGSPerkEntry* a_entry) override {
         return RE::BSContainer::ForEachResult::kContinue;
     }
 
+    void DecideFate() {
+    }
+
     //Note - these are ALWAYS filled. It's checked earlier on.
-    EntryVisitor(RE::Actor* a_summoner, RE::BSTArray<RE::CommandedActorData> a_commandedActorData) {
+    EntryVisitor(RE::Actor* a_summoner, 
+                 RE::BSTArray<RE::CommandedActorData> a_commandedActorData, 
+                 RE::TESActorBase* a_actorBase, 
+                 std::vector<RE::BGSKeyword*> a_keywords) {
+
         this->summoner = a_summoner;
         this->commandedActorData = a_commandedActorData;
+        this->newSummon = a_actorBase;
+        this->spellKeywords = a_keywords;
     }
+
+private:
+    RE::Actor*                           summoner;
+    RE::TESActorBase*                    newSummon;
+    RE::BSTArray<RE::CommandedActorData> commandedActorData;
+    std::vector<RE::BGSKeyword*>         spellKeywords;
 };
 
 struct Hooks {
@@ -36,7 +48,7 @@ struct Hooks {
         static void thunk(RE::BGSEntryPoint entry_point, RE::Actor* target, RE::MagicItem* a_spell, void* out) {
   
             float* floatPtr = static_cast<float*>(out);
-            *floatPtr = 25.0f;  // If you need more than 25 summons, I know you've got a problem
+            *floatPtr = 25.0;  // If you need more than 25 summons, I know you've got a problem
         }
         static inline REL::Relocation<decltype(thunk)> func;
     };
@@ -51,25 +63,45 @@ struct Hooks {
             auto* baseSpell = baseActiveEffect ? baseActiveEffect->spell : nullptr;
             auto* baseEffect = baseSpell ? baseActiveEffect->effect : nullptr;
             auto* baseMagicEffect = baseEffect ? baseEffect->baseEffect : nullptr;
-            if (!baseMagicEffect) return;
+            auto* effectAssociatedForm = baseMagicEffect ? baseMagicEffect->data.associatedForm : nullptr;
+            auto* effectAssociatedActorBase = effectAssociatedForm ? effectAssociatedForm->As<RE::TESActorBase>() : nullptr;
+            if (!effectAssociatedActorBase) return;
 
             //Validate that there is a summoner.
             auto* midHigh = a_AIProcess->middleHigh ? a_AIProcess->middleHigh : nullptr;
             auto* summoner = midHigh ? a_AIProcess->GetUserData() : nullptr;
             if (!summoner) return;
 
+            std::vector<RE::BGSKeyword*> spellKeywords = std::vector<RE::BGSKeyword*>();
+
+            for (auto& effect : baseSpell->effects) {
+                auto* currentEffect = effect->baseEffect;
+                uint32_t currentKeywords = currentEffect ? currentEffect->GetNumKeywords() : 0;
+                if (currentKeywords < 1) continue;
+
+                currentEffect->ForEachKeyword([&](RE::BGSKeyword* a_keyword) {
+                    if (std::find(spellKeywords.begin(), spellKeywords.end(), a_keyword) == spellKeywords.end()) {
+                        spellKeywords.push_back(a_keyword);
+                    }
+
+                    return RE::BSContainer::ForEachResult::kContinue;
+                });
+            }
+
+            if (spellKeywords.empty()) return;
+
             //The actual logic is processes inside the perkEntryVisitor object. Which is deleted at the end.
-            _loggerInfo("Creating derrived visitor");
             auto commandedActors = midHigh->commandedActors;
-            auto entryVisitor = EntryVisitor(summoner, commandedActors);
-            _loggerInfo("Casting the visitor");
+            auto entryPointType = RE::BGSEntryPoint::ENTRY_POINTS::kModCommandedActorLimit;
+            auto entryVisitor = EntryVisitor(summoner, commandedActors, effectAssociatedActorBase, spellKeywords);
             RE::PerkEntryVisitor& perkEntryVisitor = entryVisitor;
 
-            _loggerInfo("Preparing to go into the visitor");
-            summoner->ForEachPerkEntry(RE::BGSEntryPoint::ENTRY_POINT::kModCommandedActorLimit, perkEntryVisitor);
+            summoner->ForEachPerkEntry(entryPointType, perkEntryVisitor);
+            entryVisitor.DecideFate();
         }
         static inline REL::Relocation<decltype(thunk)> func;
     };
+
     static void Install() {
         //Hooks where the game looks for the actor's summon limit. Changes it to a static value.
         REL::Relocation<std::uintptr_t> functionCommandedActorLimitHook{RELOCATION_ID(38993, 40056),
